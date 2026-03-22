@@ -20,7 +20,7 @@ import (
 
 var (
 	g32                     = windows.NewLazySystemDLL("Gdi32.dll")
-	pCreateCompatibleBitmap = g32.NewProc("CreateCompatibleBitmap")
+	pCreateDIBSection       = g32.NewProc("CreateDIBSection")
 	pCreateCompatibleDC     = g32.NewProc("CreateCompatibleDC")
 	pDeleteDC               = g32.NewProc("DeleteDC")
 	pSelectObject           = g32.NewProc("SelectObject")
@@ -751,7 +751,36 @@ func (t *winTray) iconToBitmap(hIcon windows.Handle) (windows.Handle, error) {
 	defer pDeleteDC.Call(hMemDC)
 	cx, _, _ := pGetSystemMetrics.Call(SM_CXSMICON)
 	cy, _, _ := pGetSystemMetrics.Call(SM_CYSMICON)
-	hMemBmp, _, err := pCreateCompatibleBitmap.Call(hDC, cx, cy)
+
+	var bi struct {
+		Size          uint32
+		Width         int32
+		Height        int32
+		Planes        uint16
+		BitCount      uint16
+		Compression   uint32
+		SizeImage     uint32
+		XPelsPerMeter int32
+		YPelsPerMeter int32
+		ClrUsed       uint32
+		ClrImportant  uint32
+	}
+	bi.Size = uint32(unsafe.Sizeof(bi))
+	bi.Width = int32(cx)
+	bi.Height = int32(-cy) // top-down
+	bi.Planes = 1
+	bi.BitCount = 32
+	bi.Compression = 0 // BI_RGB
+
+	var bits unsafe.Pointer
+	hMemBmp, _, err := pCreateDIBSection.Call(
+		hDC,
+		uintptr(unsafe.Pointer(&bi)),
+		0, // DIB_RGB_COLORS
+		uintptr(unsafe.Pointer(&bits)),
+		0,
+		0,
+	)
 	if hMemBmp == 0 {
 		return 0, err
 	}
@@ -761,6 +790,18 @@ func (t *winTray) iconToBitmap(hIcon windows.Handle) (windows.Handle, error) {
 	if res == 0 {
 		return 0, err
 	}
+
+	if bits != nil {
+		pixels := (*[1 << 30]byte)(bits)[:cx*cy*4 : cx*cy*4]
+		// Pre-multiply alpha channel before creating HBITMAP
+		for i := 0; i < len(pixels); i += 4 {
+			a := uint32(pixels[i+3])
+			pixels[i] = byte(uint32(pixels[i]) * a / 255)     // R
+			pixels[i+1] = byte(uint32(pixels[i+1]) * a / 255) // G
+			pixels[i+2] = byte(uint32(pixels[i+2]) * a / 255) // B
+		}
+	}
+
 	return windows.Handle(hMemBmp), nil
 }
 
