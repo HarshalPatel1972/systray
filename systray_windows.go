@@ -262,6 +262,16 @@ func (t *winTray) wndProc(hWnd windows.Handle, message uint32, wParam, lParam ui
 			systrayMenuItemSelected(uint32(wParam))
 		}
 	case WM_CLOSE:
+		// Explicitly remove the tray icon from the Shell before destroying the
+		// window. Without this, the icon can linger as a ghost in the taskbar
+		// notification area if WM_DESTROY is not processed before the process
+		// exits (e.g. when the message pump is already draining).
+		t.muNID.Lock()
+		if t.nid != nil {
+			t.nid.delete()
+			t.nid = nil
+		}
+		t.muNID.Unlock()
 		pDestroyWindow.Call(uintptr(t.window))
 		t.wcex.unregister()
 	case WM_DESTROY:
@@ -271,7 +281,10 @@ func (t *winTray) wndProc(hWnd windows.Handle, message uint32, wParam, lParam ui
 	case WM_ENDSESSION:
 		t.muNID.Lock()
 		if t.nid != nil {
+			// Guard against double-delete: WM_CLOSE may have already removed
+			// the icon; only call delete() if nid is still set.
 			t.nid.delete()
+			t.nid = nil
 		}
 		t.muNID.Unlock()
 		systrayExit()
